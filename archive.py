@@ -3,13 +3,12 @@ import argparse, html, json, re, time
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 
 BASE = "https://forums.salary.sg/income-jobs/771-lawyer-salary.html"
 CACHE = Path("cache")
 OUT = Path("lawyer-salary-archive.html")
-UA = "Mozilla/5.0 (compatible; LawyerSalaryArchive/1.0; personal archival use)"
 
 
 def page_url(n):
@@ -38,7 +37,6 @@ def last_page(markup):
         m = re.search(r"771-lawyer-salary-(\d+)\.html", a["href"])
         if m:
             nums.append(int(m.group(1)))
-    # vBulletin normally exposes the final page in pagination. Fallback to 1.
     return max(nums)
 
 
@@ -47,10 +45,8 @@ def clean_fragment(node):
     root = node.find()
     for bad in root.find_all(["script", "style"]):
         bad.decompose()
-    # Keep quotes and basic formatting; remove noisy image/signature assets.
     for img in root.find_all("img"):
-        alt = img.get("alt") or ""
-        img.replace_with(alt)
+        img.replace_with(img.get("alt") or "")
     for a in root.find_all("a", href=True):
         a["href"] = urljoin(BASE, a["href"])
         a["target"] = "_blank"
@@ -69,11 +65,9 @@ def parse_posts(markup, page):
         container = body.find_parent(id=re.compile(r"^post\d+$"))
         if container is None:
             container = body.find_parent("table") or body.parent
-
         author = "Unknown"
         date = ""
         if container:
-            # vBulletin username links commonly use bigusername; retain fallbacks.
             a = container.select_one("a.bigusername") or container.select_one('a[href*="member.php"]')
             if a:
                 author = a.get_text(" ", strip=True) or author
@@ -83,9 +77,6 @@ def parse_posts(markup, page):
                 dm = re.search(r"\d{1,2}-\d{1,2}-\d{4},?\s+\d{1,2}:\d{2}\s*(?:AM|PM)", text, re.I)
             if dm:
                 date = dm.group(0)
-
-        # Direct permalink is stable even if the visible page numbering shifts.
-        link = f"https://forums.salary.sg/showpost.php?p={pid}&postcount=1"
         posts.append({
             "id": pid,
             "page": page,
@@ -93,7 +84,7 @@ def parse_posts(markup, page):
             "date": date,
             "html": clean_fragment(body),
             "text": body.get_text(" ", strip=True),
-            "link": link,
+            "link": f"https://forums.salary.sg/showpost.php?p={pid}&postcount=1",
         })
     return posts
 
@@ -112,7 +103,6 @@ def build(posts):
         cards.append(f'''<article class="post" id="post-{p['id']}" data-author="{html.escape(p['author'], quote=True)}" data-year="{year_of(p['date'])}" data-search="{search}">
 <div class="meta"><a href="{p['link']}" target="_blank" rel="noopener">#{p['id']}</a><b>{html.escape(p['author'])}</b><span>{html.escape(p['date'])}</span><span>page {p['page']}</span></div>
 <div class="body">{p['html']}</div></article>''')
-
     data = json.dumps({"posts": len(posts), "pages": max((p["page"] for p in posts), default=0)})
     author_opts = "".join(f'<option value="{html.escape(a, quote=True)}">{html.escape(a)}</option>' for a in authors)
     year_opts = "".join(f'<option value="{y}">{y}</option>' for y in years)
@@ -131,11 +121,10 @@ def main():
     ap.add_argument("--delay", type=float, default=1.0)
     args = ap.parse_args()
 
-    s = requests.Session(); s.headers.update({"User-Agent": UA})
+    s = requests.Session(impersonate="chrome")
     first = get(s, 1, delay=args.delay)
     total = last_page(first)
     if total == 1:
-        # If pagination is not exposed on page 1, probe page 2 before failing safely.
         probe = get(s, 2, delay=args.delay)
         if parse_posts(probe, 2):
             raise RuntimeError("Could not determine final page safely; forum pagination changed")
@@ -153,7 +142,6 @@ def main():
         if n % 50 == 0 or n == target:
             print(f"Parsed {n}/{target} pages ({len(all_posts)} posts)")
 
-    # De-duplicate by post id while preserving thread order.
     seen = set(); posts = []
     for p in all_posts:
         if p["id"] not in seen:
