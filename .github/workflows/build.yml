@@ -1,0 +1,58 @@
+name: Build lawyer salary archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "Pages to build (0 = full thread)"
+        required: true
+        default: "5"
+      refresh_tail:
+        description: "Newest pages to refresh even if cached"
+        required: true
+        default: "3"
+  push:
+    branches: [main]
+    paths:
+      - "archive.py"
+      - "requirements.txt"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Restore page cache
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: salary-sg-pages-${{ github.run_id }}
+          restore-keys: |
+            salary-sg-pages-
+      - name: Build archive
+        env:
+          INPUT_PAGES: ${{ github.event.inputs.pages || '5' }}
+          INPUT_REFRESH: ${{ github.event.inputs.refresh_tail || '3' }}
+        run: python archive.py --max-pages "$INPUT_PAGES" --refresh-tail "$INPUT_REFRESH" --delay 1.0
+      - name: Verify output
+        run: |
+          test -s lawyer-salary-archive.html
+          grep -q "Lawyer Salary — searchable archive" lawyer-salary-archive.html
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: lawyer-salary-archive
+          path: lawyer-salary-archive.html
+          if-no-files-found: error
+          retention-days: 30
